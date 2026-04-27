@@ -13,13 +13,9 @@ from gemini_filter import GeminiFilter
 from osint_analyzer import OSINTAnalyzer
 from randSearch import run_scrape
 
-# Global state to store results per page session
 _session_results = {}
 
 
-# ---------------------------------------------------------------------------
-# Color palette
-# ---------------------------------------------------------------------------
 BG = "#f3f6fb"
 SURFACE = "#ffffff"
 CARD = "#f8fafc"
@@ -51,10 +47,6 @@ def main(page: ft.Page):
     current_mode = "text"
 
     def run_on_ui_thread(fn, *args, **kwargs):
-        """
-        Jalankan update UI dari thread worker dengan aman.
-        Mendukung beberapa versi Flet.
-        """
         try:
             if hasattr(page, "call_from_thread"):
                 page.call_from_thread(lambda: fn(*args, **kwargs))
@@ -63,7 +55,7 @@ def main(page: ft.Page):
                 page.invoke_later(lambda: fn(*args, **kwargs))
                 return
         except Exception as ex:
-            print(f"[GUI] ui-dispatch fallback: {ex}")
+            print(f"[GUI] ui dispatch fallback: {ex}")
         fn(*args, **kwargs)
 
     def safe_update(context: str = "ui"):
@@ -72,38 +64,14 @@ def main(page: ft.Page):
         except Exception as ex:
             print(f"[GUI] page.update() failed in {context}: {ex}")
 
-    def build_panel(title: str, subtitle: str, icon: str, content: ft.Control):
+    def card(content, expand=False, padding=18):
         return ft.Container(
-            content=ft.Column(
-                [
-                    ft.Row(
-                        [
-                            ft.Container(
-                                content=ft.Icon(icon, size=18, color=ACCENT),
-                                bgcolor=ACCENT_SOFT,
-                                border_radius=12,
-                                padding=10,
-                            ),
-                            ft.Column(
-                                [
-                                    ft.Text(title, size=16, weight=ft.FontWeight.W_600, color=TEXT),
-                                    ft.Text(subtitle, size=11, color=TEXT_MUTED),
-                                ],
-                                spacing=2,
-                                expand=True,
-                            ),
-                        ],
-                        spacing=12,
-                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    ),
-                    content,
-                ],
-                spacing=16,
-            ),
+            content=content,
             bgcolor=SURFACE,
-            border_radius=20,
-            padding=20,
+            border_radius=18,
+            padding=padding,
             border=ft.border.all(1, BORDER),
+            expand=expand,
         )
 
     header = ft.Container(
@@ -125,13 +93,13 @@ def main(page: ft.Page):
                     content=ft.Column(
                         [
                             ft.Text("Version 7.0", size=11, color=TEXT_MUTED),
-                            ft.Text("Professional Workspace", size=13, weight=ft.FontWeight.W_600, color=ACCENT),
+                            ft.Text("Desktop Workspace", size=13, weight=ft.FontWeight.W_600, color=ACCENT),
                         ],
                         spacing=2,
                         horizontal_alignment=ft.CrossAxisAlignment.END,
                     ),
                     bgcolor=CARD,
-                    border_radius=16,
+                    border_radius=14,
                     padding=ft.padding.symmetric(horizontal=16, vertical=12),
                     border=ft.border.all(1, BORDER),
                 ),
@@ -139,8 +107,8 @@ def main(page: ft.Page):
             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
         ),
-        padding=ft.padding.symmetric(horizontal=24, vertical=22),
         bgcolor=SURFACE,
+        padding=ft.padding.symmetric(horizontal=24, vertical=20),
         border=ft.border.only(bottom=ft.BorderSide(1, BORDER)),
     )
 
@@ -154,7 +122,6 @@ def main(page: ft.Page):
         border_radius=14,
         prefix_icon=ft.Icons.SEARCH,
         text_size=15,
-        expand=True,
         content_padding=ft.padding.symmetric(horizontal=16, vertical=16),
     )
 
@@ -208,54 +175,35 @@ def main(page: ft.Page):
 
     def slider_changed(e):
         num_label.value = f"Jumlah hasil: {int(num_slider.value)}"
-        page.update()
+        safe_update("slider")
 
     num_slider.on_change = slider_changed
 
     enrich_switch = ft.Switch(label="Ambil tanggal asli", value=True, active_color=ACCENT)
 
+    def mode_label(text: str):
+        return ft.Container(
+            content=ft.Text(text, no_wrap=True, size=12, weight=ft.FontWeight.W_600),
+            width=58,
+        )
+
     def mode_changed(e):
         nonlocal current_mode
         sel = mode_selector.selected
         current_mode = sel[0] if isinstance(sel, list) and sel else (list(sel)[0] if sel else "text")
-
         is_osint = current_mode == "osint"
         lang_dd.visible = not is_osint
         time_dd.visible = not is_osint
-        result_count_block.visible = not is_osint
-        enrich_container.visible = not is_osint
-        page.update()
+        count_box.visible = not is_osint
+        enrich_box.visible = not is_osint
+        safe_update("mode")
 
     mode_selector = ft.SegmentedButton(
         segments=[
-            ft.Segment(
-                value="text",
-                label=ft.Container(
-                    content=ft.Text("Text", no_wrap=True, size=12, weight=ft.FontWeight.W_600),
-                    width=56,
-                ),
-            ),
-            ft.Segment(
-                value="news",
-                label=ft.Container(
-                    content=ft.Text("News", no_wrap=True, size=12, weight=ft.FontWeight.W_600),
-                    width=56,
-                ),
-            ),
-            ft.Segment(
-                value="stock",
-                label=ft.Container(
-                    content=ft.Text("Stock", no_wrap=True, size=12, weight=ft.FontWeight.W_600),
-                    width=56,
-                ),
-            ),
-            ft.Segment(
-                value="osint",
-                label=ft.Container(
-                    content=ft.Text("OSINT", no_wrap=True, size=12, weight=ft.FontWeight.W_600),
-                    width=56,
-                ),
-            ),
+            ft.Segment(value="text", label=mode_label("Text")),
+            ft.Segment(value="news", label=mode_label("News")),
+            ft.Segment(value="stock", label=mode_label("Stock")),
+            ft.Segment(value="osint", label=mode_label("OSINT")),
         ],
         selected=["text"],
         on_change=mode_changed,
@@ -267,38 +215,46 @@ def main(page: ft.Page):
     )
 
     progress_bar = ft.ProgressBar(value=0, color=ACCENT, bgcolor=ACCENT_SOFT, visible=False, bar_height=8)
+    progress_wrap = ft.Container(
+        content=progress_bar,
+        bgcolor=CARD_ALT,
+        border_radius=999,
+        padding=2,
+        visible=False,
+    )
     status_text = ft.Text("", size=11, color=ACCENT, italic=True)
-    log_list = ft.ListView(spacing=4, height=120, auto_scroll=True)
+
+    log_list = ft.ListView(spacing=4, auto_scroll=True, height=120)
 
     def add_log(msg: str):
         log_list.controls.append(ft.Text(msg, size=11, color=TEXT_MUTED, selectable=True))
-        safe_update("add_log")
+        safe_update("log")
 
-    results_column = ft.Column(spacing=10, scroll=ft.ScrollMode.AUTO, expand=True)
     results_count = ft.Text("Belum ada hasil", size=12, color=TEXT_MUTED)
+    results_column = ft.Column(spacing=10, scroll=ft.ScrollMode.AUTO, expand=True)
 
-    empty_results = ft.Container(
-        content=ft.Column(
-            [
-                ft.Icon(ft.Icons.SEARCH_OFF, size=40, color=TEXT_SOFT),
-                ft.Text("Belum ada hasil pencarian", size=16, weight=ft.FontWeight.W_600, color=TEXT),
-                ft.Text(
-                    "Masukkan query lalu klik Run Search untuk mulai mencari.",
-                    size=12,
-                    color=TEXT_MUTED,
-                    text_align=ft.TextAlign.CENTER,
-                ),
-            ],
-            spacing=8,
+    def build_empty_results():
+        return ft.Container(
+            content=ft.Column(
+                [
+                    ft.Icon(ft.Icons.SEARCH_OFF, size=40, color=TEXT_SOFT),
+                    ft.Text("Belum ada hasil pencarian", size=16, weight=ft.FontWeight.W_600, color=TEXT),
+                    ft.Text(
+                        "Masukkan query lalu klik Run Search untuk mulai mencari.",
+                        size=12,
+                        color=TEXT_MUTED,
+                        text_align=ft.TextAlign.CENTER,
+                    ),
+                ],
+                spacing=8,
+                alignment=ft.MainAxisAlignment.CENTER,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
             expand=True,
-            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-            alignment=ft.MainAxisAlignment.CENTER,
-        ),
-        expand=True,
-    )
+        )
 
     results_area = ft.Container(
-        content=empty_results,
+        content=build_empty_results(),
         bgcolor=CARD,
         border_radius=16,
         padding=14,
@@ -315,7 +271,6 @@ def main(page: ft.Page):
         src = r.get("source", "")
         desc = r.get("ai_summary") or (r.get("description") or "")[:170]
         link = r.get("link") or ""
-
         grade_color = SUCCESS if grade.startswith(("A", "B")) else (WARNING if grade.startswith("C") else DANGER)
 
         return ft.Container(
@@ -371,7 +326,7 @@ def main(page: ft.Page):
                 ],
                 spacing=8,
             ),
-            bgcolor=CARD,
+            bgcolor=SURFACE,
             border_radius=16,
             padding=14,
             border=ft.border.all(1, BORDER),
@@ -409,6 +364,12 @@ def main(page: ft.Page):
         visible=False,
     )
 
+    def show_results_empty():
+        results_area.content = build_empty_results()
+
+    def show_results_cards():
+        results_area.content = ft.Container(content=results_column, expand=True)
+
     def on_search(e):
         nonlocal search_running, current_mode
         if search_running:
@@ -426,12 +387,12 @@ def main(page: ft.Page):
         status_text.value = "Memproses query..."
         log_list.controls.clear()
         results_column.controls.clear()
-        results_area.content = empty_results
         results_count.value = "Menunggu hasil..."
+        show_results_empty()
         ai_panel.visible = False
         osint_panel.visible = False
         osint_content.controls.clear()
-        safe_update("on_search:start")
+        safe_update("search:start")
 
         sel = mode_selector.selected
         selected_mode = sel[0] if isinstance(sel, list) and sel else (list(sel)[0] if sel else "text")
@@ -463,34 +424,31 @@ def main(page: ft.Page):
             run_on_ui_thread(add_log, msg)
 
         def _on_progress(pct):
-            def _apply_progress():
+            def _apply():
                 progress_bar.value = pct
                 status_text.value = f"Progress {int(pct * 100)}%"
                 safe_update("progress")
 
-            run_on_ui_thread(_apply_progress)
+            run_on_ui_thread(_apply)
 
         def _on_complete(data):
-            def _apply_complete():
+            def _apply():
                 nonlocal search_running
                 try:
                     _session_results[page.session.id] = data.get("results", [])
-
                     results = data.get("results", [])
                     summary = data.get("ai_summary", "")
                     print(f"[GUI] Rendering {len(results)} results")
+
                     results_column.controls.clear()
                     results_count.value = f"{len(results)} hasil ditemukan"
 
                     if results:
-                        for i, r in enumerate(results):
-                            try:
-                                results_column.controls.append(build_result_card(r, i))
-                            except Exception as ex:
-                                add_log(f"⚠️ Render card gagal di index {i + 1}: {ex}")
-                        results_area.content = results_column
+                        for i, item in enumerate(results):
+                            results_column.controls.append(build_result_card(item, i))
+                        show_results_cards()
                     else:
-                        results_area.content = empty_results
+                        show_results_empty()
 
                     if mode == "osint":
                         oa = OSINTAnalyzer()
@@ -542,10 +500,11 @@ def main(page: ft.Page):
                     else:
                         ai_panel.visible = False
                 except Exception as ex:
-                    add_log(f"❌ Gagal render hasil: {ex}")
-                    results_area.content = empty_results
-                    ai_panel.visible = False
+                    print(f"[GUI] render failed: {ex}")
+                    add_log(f"Error render hasil: {ex}")
+                    show_results_empty()
                     osint_panel.visible = False
+                    ai_panel.visible = False
                 finally:
                     progress_bar.visible = False
                     progress_wrap.visible = False
@@ -554,7 +513,7 @@ def main(page: ft.Page):
                     search_running = False
                     safe_update("complete")
 
-            run_on_ui_thread(_apply_complete)
+            run_on_ui_thread(_apply)
 
         def _worker():
             run_scrape(
@@ -587,6 +546,7 @@ def main(page: ft.Page):
     def on_conclude(e):
         if not results_column.controls:
             return
+
         conclude_btn.disabled = True
         safe_update("conclude:start")
         add_log("Menyusun kesimpulan AI...")
@@ -598,12 +558,12 @@ def main(page: ft.Page):
                 results = _session_results.get(page.session.id, [])
                 if not results:
                     run_on_ui_thread(add_log, "Tidak ada data untuk disimpulkan")
-                    run_on_ui_thread(
-                        lambda: (
-                            setattr(conclude_btn, "disabled", False),
-                            safe_update("conclude:no_results"),
-                        )
-                    )
+
+                    def _restore():
+                        conclude_btn.disabled = False
+                        safe_update("conclude:no_results")
+
+                    run_on_ui_thread(_restore)
                     return
 
                 if current_mode == "osint":
@@ -616,22 +576,21 @@ def main(page: ft.Page):
                 else:
                     summary = gf.summarize_results(results, kw, lang_dd.value)
 
-                def _apply_summary():
+                def _apply():
                     ai_content.value = summary
                     ai_panel.visible = True
                     conclude_btn.disabled = False
                     add_log("Kesimpulan AI selesai")
                     safe_update("conclude:done")
 
-                run_on_ui_thread(_apply_summary)
+                run_on_ui_thread(_apply)
             except Exception as ex:
-                run_on_ui_thread(add_log, f"Error: {ex}")
-                run_on_ui_thread(
-                    lambda: (
-                        setattr(conclude_btn, "disabled", False),
-                        safe_update("conclude:error"),
-                    )
-                )
+                def _fail():
+                    add_log(f"Error: {ex}")
+                    conclude_btn.disabled = False
+                    safe_update("conclude:error")
+
+                run_on_ui_thread(_fail)
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -647,35 +606,7 @@ def main(page: ft.Page):
         ),
     )
 
-    search_summary = ft.Container(
-        content=ft.Row(
-            [
-                ft.Column(
-                    [
-                        ft.Text("Workflow", size=11, color=TEXT_MUTED),
-                        ft.Text("Natural Search", size=14, weight=ft.FontWeight.W_600, color=TEXT),
-                    ],
-                    spacing=3,
-                    expand=True,
-                ),
-                ft.VerticalDivider(width=1, color=BORDER),
-                ft.Column(
-                    [
-                        ft.Text("AI Layer", size=11, color=TEXT_MUTED),
-                        ft.Text("Gemini + OSINT", size=14, weight=ft.FontWeight.W_600, color=TEXT),
-                    ],
-                    spacing=3,
-                    expand=True,
-                ),
-            ],
-            spacing=12,
-        ),
-        bgcolor=CARD_ALT,
-        border_radius=16,
-        padding=14,
-    )
-
-    result_count_block = ft.Container(
+    count_box = ft.Container(
         content=ft.Column([num_label, num_slider], spacing=6),
         bgcolor=CARD,
         border_radius=16,
@@ -683,7 +614,7 @@ def main(page: ft.Page):
         border=ft.border.all(1, BORDER),
     )
 
-    enrich_container = ft.Container(
+    enrich_box = ft.Container(
         content=enrich_switch,
         bgcolor=CARD,
         border_radius=16,
@@ -691,34 +622,75 @@ def main(page: ft.Page):
         border=ft.border.all(1, BORDER),
     )
 
-    left_panel = build_panel(
-        "Search Configuration",
-        "Set query, search mode, and retrieval filters.",
-        ft.Icons.TUNE,
+    left_panel = card(
         ft.Column(
             [
-                search_summary,
+                ft.Row(
+                    [
+                        ft.Container(
+                            content=ft.Icon(ft.Icons.TUNE, color=ACCENT, size=18),
+                            bgcolor=ACCENT_SOFT,
+                            border_radius=12,
+                            padding=10,
+                        ),
+                        ft.Column(
+                            [
+                                ft.Text("Search Configuration", size=16, weight=ft.FontWeight.W_600, color=TEXT),
+                                ft.Text("Set query, mode, and retrieval filters.", size=11, color=TEXT_MUTED),
+                            ],
+                            spacing=2,
+                            expand=True,
+                        ),
+                    ],
+                    spacing=12,
+                ),
+                ft.Container(
+                    content=ft.Row(
+                        [
+                            ft.Column(
+                                [
+                                    ft.Text("Workflow", size=11, color=TEXT_MUTED),
+                                    ft.Text("Natural Search", size=14, weight=ft.FontWeight.W_600, color=TEXT),
+                                ],
+                                spacing=3,
+                                expand=True,
+                            ),
+                            ft.VerticalDivider(width=1, color=BORDER),
+                            ft.Column(
+                                [
+                                    ft.Text("AI Layer", size=11, color=TEXT_MUTED),
+                                    ft.Text("Gemini + OSINT", size=14, weight=ft.FontWeight.W_600, color=TEXT),
+                                ],
+                                spacing=3,
+                                expand=True,
+                            ),
+                        ],
+                        spacing=12,
+                    ),
+                    bgcolor=CARD_ALT,
+                    border_radius=16,
+                    padding=14,
+                ),
                 search_field,
-                ft.Column([ft.Text("Mode pencarian", size=11, color=TEXT_MUTED), mode_selector], spacing=8),
+                ft.Column(
+                    [
+                        ft.Text("Mode pencarian", size=11, color=TEXT_MUTED),
+                        mode_selector,
+                    ],
+                    spacing=8,
+                ),
                 ft.Row([lang_dd, time_dd], spacing=10, wrap=True),
-                result_count_block,
-                enrich_container,
+                count_box,
+                enrich_box,
                 search_btn,
                 status_text,
             ],
             spacing=14,
             scroll=ft.ScrollMode.AUTO,
         ),
+        padding=20,
     )
     left_panel.width = 340
-
-    progress_wrap = ft.Container(
-        content=progress_bar,
-        bgcolor=CARD_ALT,
-        border_radius=999,
-        padding=2,
-        visible=False,
-    )
 
     log_wrap = ft.Container(
         content=ft.Column(
@@ -734,39 +706,63 @@ def main(page: ft.Page):
         border=ft.border.all(1, BORDER),
     )
 
-    right_panel = build_panel(
-        "Results Workspace",
-        "Reviewed results, AI summary, and execution log.",
-        ft.Icons.DASHBOARD_OUTLINED,
+    results_section = ft.Column(
+        [
+            ft.Row(
+                [
+                    ft.Column(
+                        [
+                            ft.Text("Search results", size=16, weight=ft.FontWeight.W_600, color=TEXT),
+                            results_count,
+                        ],
+                        spacing=2,
+                        expand=True,
+                    ),
+                    conclude_btn,
+                ],
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            progress_wrap,
+            results_area,
+            osint_panel,
+            ai_panel,
+            log_wrap,
+        ],
+        spacing=12,
+        expand=True,
+    )
+
+    right_panel = card(
         ft.Column(
             [
                 ft.Row(
                     [
+                        ft.Container(
+                            content=ft.Icon(ft.Icons.DASHBOARD_OUTLINED, color=ACCENT, size=18),
+                            bgcolor=ACCENT_SOFT,
+                            border_radius=12,
+                            padding=10,
+                        ),
                         ft.Column(
                             [
-                                ft.Text("Search results", size=16, weight=ft.FontWeight.W_600, color=TEXT),
-                                results_count,
+                                ft.Text("Results Workspace", size=16, weight=ft.FontWeight.W_600, color=TEXT),
+                                ft.Text("Reviewed results, AI summary, and execution log.", size=11, color=TEXT_MUTED),
                             ],
                             spacing=2,
                             expand=True,
                         ),
-                        conclude_btn,
                     ],
-                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                    wrap=True,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    spacing=12,
                 ),
-                progress_wrap,
-                results_area,
-                osint_panel,
-                ai_panel,
-                log_wrap,
+                results_section,
             ],
-            spacing=12,
+            spacing=16,
             expand=True,
         ),
+        expand=True,
+        padding=20,
     )
-    right_panel.expand = True
 
     body = ft.Row(
         [left_panel, right_panel],
@@ -781,8 +777,8 @@ def main(page: ft.Page):
                 header,
                 ft.Container(content=body, expand=True, padding=20),
             ],
-            expand=True,
             spacing=0,
+            expand=True,
         )
     )
 
