@@ -50,6 +50,22 @@ def main(page: ft.Page):
     search_running = False
     current_mode = "text"
 
+    def run_on_ui_thread(fn, *args, **kwargs):
+        """
+        Jalankan update UI dari thread worker dengan aman.
+        Mendukung beberapa versi Flet.
+        """
+        try:
+            if hasattr(page, "call_from_thread"):
+                page.call_from_thread(lambda: fn(*args, **kwargs))
+                return
+            if hasattr(page, "invoke_later"):
+                page.invoke_later(lambda: fn(*args, **kwargs))
+                return
+        except Exception as ex:
+            print(f"[GUI] ui-dispatch fallback: {ex}")
+        fn(*args, **kwargs)
+
     def safe_update(context: str = "ui"):
         try:
             page.update()
@@ -444,80 +460,101 @@ def main(page: ft.Page):
         add_log(f"Bahasa={lang} | Mode={mode} | Waktu={tr}")
 
         def _on_log(msg):
-            add_log(msg)
+            run_on_ui_thread(add_log, msg)
 
         def _on_progress(pct):
-            progress_bar.value = pct
-            status_text.value = f"Progress {int(pct * 100)}%"
-            safe_update("progress")
+            def _apply_progress():
+                progress_bar.value = pct
+                status_text.value = f"Progress {int(pct * 100)}%"
+                safe_update("progress")
+
+            run_on_ui_thread(_apply_progress)
 
         def _on_complete(data):
-            nonlocal search_running
-            _session_results[page.session.id] = data.get("results", [])
+            def _apply_complete():
+                nonlocal search_running
+                try:
+                    _session_results[page.session.id] = data.get("results", [])
 
-            results = data.get("results", [])
-            summary = data.get("ai_summary", "")
-            print(f"[GUI] Rendering {len(results)} results")
-            results_column.controls.clear()
-            results_count.value = f"{len(results)} hasil ditemukan"
+                    results = data.get("results", [])
+                    summary = data.get("ai_summary", "")
+                    print(f"[GUI] Rendering {len(results)} results")
+                    results_column.controls.clear()
+                    results_count.value = f"{len(results)} hasil ditemukan"
 
-            if results:
-                for i, r in enumerate(results):
-                    results_column.controls.append(build_result_card(r, i))
-                results_area.content = results_column
-            else:
-                results_area.content = empty_results
+                    if results:
+                        for i, r in enumerate(results):
+                            try:
+                                results_column.controls.append(build_result_card(r, i))
+                            except Exception as ex:
+                                add_log(f"⚠️ Render card gagal di index {i + 1}: {ex}")
+                        results_area.content = results_column
+                    else:
+                        results_area.content = empty_results
 
-            if mode == "osint":
-                oa = OSINTAnalyzer()
-                combined_text = " ".join(
-                    [r.get("title", "") + " " + r.get("description", "") for r in results]
-                )
-                entities = oa.extract_entities_regex(combined_text)
-                osint_content.controls.clear()
+                    if mode == "osint":
+                        oa = OSINTAnalyzer()
+                        combined_text = " ".join(
+                            [r.get("title", "") + " " + r.get("description", "") for r in results]
+                        )
+                        entities = oa.extract_entities_regex(combined_text)
+                        osint_content.controls.clear()
 
-                if entities.get("emails"):
-                    osint_content.controls.append(
-                        ft.Text("Emails", size=11, color=TEXT_MUTED, weight=ft.FontWeight.BOLD)
-                    )
-                    for value in entities["emails"]:
-                        osint_content.controls.append(ft.Text(f"- {value}", size=11, color=TEXT, selectable=True))
+                        if entities.get("emails"):
+                            osint_content.controls.append(
+                                ft.Text("Emails", size=11, color=TEXT_MUTED, weight=ft.FontWeight.BOLD)
+                            )
+                            for value in entities["emails"]:
+                                osint_content.controls.append(
+                                    ft.Text(f"- {value}", size=11, color=TEXT, selectable=True)
+                                )
 
-                if entities.get("phones"):
-                    osint_content.controls.append(
-                        ft.Text("Phones", size=11, color=TEXT_MUTED, weight=ft.FontWeight.BOLD)
-                    )
-                    for value in entities["phones"]:
-                        osint_content.controls.append(ft.Text(f"- {value}", size=11, color=TEXT, selectable=True))
+                        if entities.get("phones"):
+                            osint_content.controls.append(
+                                ft.Text("Phones", size=11, color=TEXT_MUTED, weight=ft.FontWeight.BOLD)
+                            )
+                            for value in entities["phones"]:
+                                osint_content.controls.append(
+                                    ft.Text(f"- {value}", size=11, color=TEXT, selectable=True)
+                                )
 
-                if entities.get("links"):
-                    osint_content.controls.append(
-                        ft.Text("Key footprints", size=11, color=TEXT_MUTED, weight=ft.FontWeight.BOLD)
-                    )
-                    for value in entities["links"][:5]:
-                        osint_content.controls.append(ft.Text(f"- {value}", size=11, color=ACCENT, selectable=True))
+                        if entities.get("links"):
+                            osint_content.controls.append(
+                                ft.Text("Key footprints", size=11, color=TEXT_MUTED, weight=ft.FontWeight.BOLD)
+                            )
+                            for value in entities["links"][:5]:
+                                osint_content.controls.append(
+                                    ft.Text(f"- {value}", size=11, color=ACCENT, selectable=True)
+                                )
 
-                if not osint_content.controls:
-                    osint_content.controls.append(
-                        ft.Text("No key entities automatically detected.", size=11, color=TEXT_MUTED)
-                    )
+                        if not osint_content.controls:
+                            osint_content.controls.append(
+                                ft.Text("No key entities automatically detected.", size=11, color=TEXT_MUTED)
+                            )
 
-                osint_panel.visible = True
-            else:
-                osint_panel.visible = False
+                        osint_panel.visible = True
+                    else:
+                        osint_panel.visible = False
 
-            if summary:
-                ai_content.value = summary
-                ai_panel.visible = True
-            else:
-                ai_panel.visible = False
+                    if summary:
+                        ai_content.value = summary
+                        ai_panel.visible = True
+                    else:
+                        ai_panel.visible = False
+                except Exception as ex:
+                    add_log(f"❌ Gagal render hasil: {ex}")
+                    results_area.content = empty_results
+                    ai_panel.visible = False
+                    osint_panel.visible = False
+                finally:
+                    progress_bar.visible = False
+                    progress_wrap.visible = False
+                    status_text.value = "Selesai"
+                    search_btn.disabled = False
+                    search_running = False
+                    safe_update("complete")
 
-            progress_bar.visible = False
-            progress_wrap.visible = False
-            status_text.value = "Selesai"
-            search_btn.disabled = False
-            search_running = False
-            safe_update("complete")
+            run_on_ui_thread(_apply_complete)
 
         def _worker():
             run_scrape(
@@ -560,9 +597,13 @@ def main(page: ft.Page):
                 kw = search_field.value.strip()
                 results = _session_results.get(page.session.id, [])
                 if not results:
-                    add_log("Tidak ada data untuk disimpulkan")
-                    conclude_btn.disabled = False
-                    safe_update("conclude:no_results")
+                    run_on_ui_thread(add_log, "Tidak ada data untuk disimpulkan")
+                    run_on_ui_thread(
+                        lambda: (
+                            setattr(conclude_btn, "disabled", False),
+                            safe_update("conclude:no_results"),
+                        )
+                    )
                     return
 
                 if current_mode == "osint":
@@ -575,14 +616,22 @@ def main(page: ft.Page):
                 else:
                     summary = gf.summarize_results(results, kw, lang_dd.value)
 
-                ai_content.value = summary
-                ai_panel.visible = True
-                conclude_btn.disabled = False
-                add_log("Kesimpulan AI selesai")
+                def _apply_summary():
+                    ai_content.value = summary
+                    ai_panel.visible = True
+                    conclude_btn.disabled = False
+                    add_log("Kesimpulan AI selesai")
+                    safe_update("conclude:done")
+
+                run_on_ui_thread(_apply_summary)
             except Exception as ex:
-                add_log(f"Error: {ex}")
-                conclude_btn.disabled = False
-            safe_update("conclude:done")
+                run_on_ui_thread(add_log, f"Error: {ex}")
+                run_on_ui_thread(
+                    lambda: (
+                        setattr(conclude_btn, "disabled", False),
+                        safe_update("conclude:error"),
+                    )
+                )
 
         threading.Thread(target=_worker, daemon=True).start()
 
