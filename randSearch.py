@@ -243,8 +243,10 @@ class SearchScraper:
         print("\n=== 🧠 SMART KEYWORD EXPANSION ===")
         optimized: list[str] = []
         for kw in keywords:
-            variants = get_optimized_queries(kw, language)
-            combined = [kw] + variants[:2]  # Max 2 variasi per keyword
+            variants = get_optimized_queries(kw, language, intent=search_mode)
+            # Max 2 variasi per keyword untuk search biasa, ambil semua untuk osint
+            max_vars = len(variants) if search_mode == "osint" else 2
+            combined = [kw] + variants[:max_vars]
             optimized.extend(combined)
 
         seen = set()
@@ -402,6 +404,130 @@ class SearchScraper:
             desc = r.get("ai_summary") or r.get("description", "")[:120]
             if desc:
                 print(f"   {Fore.WHITE}📝 {desc}…{Style.RESET_ALL}")
+
+
+# ---------------------------------------------------------------------------
+# GUI-compatible runner (callback-based)
+# ---------------------------------------------------------------------------
+
+def run_scrape(
+    keywords: list[str],
+    language: str = "id",
+    time_range: str = "w",
+    num_results: int = 20,
+    search_mode: str = "text",
+    enrich_dates: bool = True,
+    on_log=None,
+    on_progress=None,
+    on_complete=None,
+):
+    """
+    Run scraping with callbacks for GUI integration.
+
+    on_log(msg: str)         — log message
+    on_progress(pct: float)  — progress 0.0-1.0
+    on_complete(data: dict)  — final results
+    """
+    def log(msg):
+        if on_log:
+            on_log(msg)
+
+    def progress(pct):
+        if on_progress:
+            on_progress(pct)
+
+    try:
+        log("🔍 Starting search…")
+        progress(0.05)
+
+        # Smart expansion
+        log("🧠 Smart keyword expansion…")
+        optimized = []
+        for kw in keywords:
+            variants = get_optimized_queries(kw, language, intent=search_mode)
+            max_vars = len(variants) if search_mode == "osint" else 2
+            combined = [kw] + variants[:max_vars]
+            optimized.extend(combined)
+
+        seen = set()
+        unique = [q for q in optimized if q.lower() not in seen and not seen.add(q.lower())]
+        optimized = unique
+        log(f"   📊 {len(optimized)} queries")
+        progress(0.1)
+
+        # Scrape
+        scraper = SearchScraper()
+        scraper.scrape(
+            keywords=keywords,
+            language=language,
+            time_range=time_range,
+            num_results=num_results,
+            use_language_filter=True,
+            search_mode="news" if search_mode == "stock" else search_mode,
+            enrich_dates=enrich_dates,
+        )
+        progress(0.6)
+
+        if not scraper.results:
+            log("⚠️ Tidak ada hasil.")
+            if on_complete:
+                on_complete({"results": [], "ai_summary": ""})
+            return
+
+        log(f"📦 {len(scraper.results)} hasil mentah")
+
+        # Dedup & score
+        scraper.deduplicate()
+        scraper.score_and_rank(language=language)
+        log(f"⭐ {len(scraper.results)} hasil setelah dedup + scoring")
+        progress(0.7)
+
+        # Gemini filter
+        log("🤖 Gemini AI filter…")
+        try:
+            from gemini_filter import GeminiFilter
+            gf = GeminiFilter()
+            keyword_hint = keywords[0] if keywords else ""
+            scraper.results = gf.filter_results(scraper.results, language, keyword_hint)
+            log(f"✅ {len(scraper.results)} lolos filter")
+        except Exception as e:
+            log(f"⚠️ Gemini filter error: {e}")
+        progress(0.85)
+
+        # Trend / Stock analysis
+        ai_summary = ""
+        if search_mode == "stock":
+            log("📈 Generating stock sentiment…")
+            try:
+                gf = GeminiFilter()
+                ai_summary = gf.analyze_stock_sentiment(
+                    scraper.results, keywords[0] if keywords else "", language
+                )
+            except Exception as e:
+                ai_summary = f"⚠️ Error: {e}"
+        else:
+            scraper.detect_trends()
+
+        progress(0.95)
+
+        # Export
+        scraper.export_csv()
+        log("💾 Exported to search_results.csv")
+
+        progress(1.0)
+        log("✅ Selesai!")
+
+        if on_complete:
+            on_complete({
+                "results": scraper.results,
+                "ai_summary": ai_summary,
+                "mode": search_mode,
+            })
+
+    except Exception as e:
+        log(f"❌ Error: {e}")
+        if on_complete:
+            on_complete({"results": [], "ai_summary": f"Error: {e}"})
 
 
 # ---------------------------------------------------------------------------

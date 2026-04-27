@@ -14,6 +14,7 @@ import os
 import json
 import google.generativeai as genai
 from dotenv import load_dotenv
+from ai_engine import AIEngine
 
 load_dotenv()
 
@@ -23,17 +24,12 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 
 class GeminiFilter:
-    """AI-powered filter menggunakan Gemini."""
+    """Smart language filter and AI parser routing requests via AIEngine (Groq/Gemini)."""
 
     BATCH_SIZE = 15  # Kirim 15 hasil per API call
 
     def __init__(self):
-        api_key = os.getenv("GEMINI_API_KEY")
-        if not api_key:
-            raise ValueError("GEMINI_API_KEY tidak ditemukan di .env")
-
-        genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel("gemini-2.5-flash")
+        self.ai = AIEngine()
 
     # ------------------------------------------------------------------
     # Natural language query parser
@@ -57,28 +53,33 @@ Input user: "{user_input}"
 Tugas:
 1. Ekstrak 2-4 keyword pencarian yang OPTIMAL untuk mesin pencari (singkat, tepat, tanpa kata-kata tidak perlu)
 2. Deteksi bahasa konten yang dicari (id/en/es/…)
-3. Deteksi mode pencarian: "text" (web umum), "news" (berita terkini), atau "stock" (prediksi/analisis saham)
+3. Deteksi mode pencarian: "text" (web umum), "news" (berita terkini), "stock" (prediksi/analisis saham), atau "osint" (mencari profil/orang/data intelijen)
 4. Deteksi rentang waktu: "d" (hari ini), "w" (minggu ini), "m" (bulan ini), "y" (tahun ini), "" (semua)
 
-Respond HANYA JSON, tanpa markdown:
-{{"keywords": ["keyword1", "keyword2"], "language": "id", "mode": "stock", "time_range": "d"}}"""
+Keluarkan output dalam format JSON strict seperti ini:
+{{
+  "keywords": ["keyword 1", "keyword 2"],
+  "language": "id",
+  "mode": "text|news|stock|osint",
+  "time_range": "d|w|m|y"
+}}
+
+Pastikan hanya mengembalikan JSON, tanpa markdown atau teks tambahan."""
 
         try:
-            response = self.model.generate_content(prompt)
-            text = response.text.strip()
+            parsed = self.ai.generate_json(prompt, prefer_groq=True)
+            if not parsed.get("keywords"):
+                parsed["keywords"] = [user_input]
+            
+            # Default fallbacks
+            parsed.setdefault("language", "id")
+            parsed.setdefault("mode", "text")
+            parsed.setdefault("time_range", "w")
+            
+            return parsed
 
-            # Bersihkan markdown
-            if text.startswith("```"):
-                text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-            if text.endswith("```"):
-                text = text[:-3]
-            text = text.strip()
-
-            parsed = json.loads(text)
-            if isinstance(parsed, dict) and "keywords" in parsed:
-                return parsed
         except Exception as e:
-            print(f"   ⚠️  Parse error: {e}")
+            print(f"⚠️ parsing natural query error: {e}")
 
         # Fallback: split manual
         return {
@@ -110,13 +111,9 @@ Respond HANYA JSON, tanpa markdown:
 Hasil pencarian:
 {json.dumps(items, ensure_ascii=False)}
 
-Tulis kesimpulan yang informatif dan padat. Sebutkan temuan utama, tren, dan insight penting."""
+Buat 1 paragraf singkat dan padat."""
 
-        try:
-            response = self.model.generate_content(prompt)
-            return response.text.strip()
-        except Exception as e:
-            return f"⚠️ Gagal membuat kesimpulan: {e}"
+        return self.ai.generate_text(prompt, prefer_groq=True)
 
     # ------------------------------------------------------------------
     # Stock Sentiment Analysis
@@ -149,11 +146,8 @@ Format Laporan:
 
 Tulis dengan gaya profesional namun mudah dipahami trader ritel. Pastikan tidak menambah informasi di luar dari data yang diberikan atau pengetahuan umum yang sangat relevan dan aman."""
 
-        try:
-            response = self.model.generate_content(prompt)
-            return response.text.strip()
-        except Exception as e:
-            return f"⚠️ Gagal menganalisis sentimen saham: {e}"
+        # Keep Stock Sentiment on Gemini by default as it might reasoning better about finance
+        return self.ai.generate_text(prompt, prefer_groq=False)
 
     def filter_results(
         self,
@@ -183,7 +177,7 @@ Tulis dengan gaya profesional namun mudah dipahami trader ritel. Pastikan tidak 
             end = start + self.BATCH_SIZE
             batch = results[start:end]
 
-            print(f"   🤖 Gemini batch {batch_idx + 1}/{total_batches} "
+            print(f"   🤖 AI batch {batch_idx + 1}/{total_batches} "
                   f"({len(batch)} hasil)…")
 
             ai_results = self._analyze_batch(batch, target_language, keyword)
@@ -210,7 +204,7 @@ Tulis dengan gaya profesional namun mudah dipahami trader ritel. Pastikan tidak 
                     filtered.append(r)
 
         removed = len(results) - len(filtered)
-        print(f"   ✅ Gemini filter: {len(filtered)} lolos | "
+        print(f"   ✅ AI filter: {len(filtered)} lolos | "
               f"{removed} dibuang")
 
         return filtered
@@ -221,7 +215,7 @@ Tulis dengan gaya profesional namun mudah dipahami trader ritel. Pastikan tidak 
 
     def _analyze_batch(
         self,
-        batch: list[dict],
+        chunk: list[dict],
         target_language: str,
         keyword: str,
     ) -> list[dict]:
@@ -229,7 +223,7 @@ Tulis dengan gaya profesional namun mudah dipahami trader ritel. Pastikan tidak 
 
         # Build compact items for prompt
         items = []
-        for i, r in enumerate(batch):
+        for i, r in enumerate(chunk):
             items.append({
                 "id": i,
                 "title": (r.get("title") or "")[:100],
@@ -250,35 +244,25 @@ Analisis setiap hasil berikut. Untuk masing-masing, tentukan:
 ITEMS:
 {json.dumps(items, ensure_ascii=False)}
 
-Respond HANYA dalam format JSON array, tanpa markdown:
-[{{"id":0,"language":"id","relevant":true,"summary":"..."}}, ...]"""
+Keluarkan output sebagai JSON dictionary dimana context_id adalah key, dan value-nya adalah JSON object berisi "language" (string), "relevance" (int 0-100), dan "summary" (string pendek 1 kalimat):
+{{
+  "item_0": {{"language": "id", "relevance": 90, "summary": "Ringkasan pendek."}}
+}}"""
 
         try:
-            response = self.model.generate_content(prompt)
-            text = response.text.strip()
-
-            # Bersihkan markdown wrapper jika ada
-            if text.startswith("```"):
-                text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-            if text.endswith("```"):
-                text = text[:-3]
-            text = text.strip()
-
-            parsed = json.loads(text)
-            if isinstance(parsed, list):
-                return parsed
-        except json.JSONDecodeError:
-            # Coba extract JSON dari response
-            try:
-                import re
-                match = re.search(r'\[.*\]', text, re.DOTALL)
-                if match:
-                    return json.loads(match.group())
-            except Exception:
-                pass
+            res_json = self.ai.generate_json(prompt, prefer_groq=True)
+            for c_id, vals in res_json.items():
+                idx_str = c_id.split("_")[-1]
+                if idx_str.isdigit():
+                    i = int(idx_str)
+                    if 0 <= i < len(chunk):
+                        chunk[i]["detected_language"] = vals.get("language", "unknown").lower()
+                        chunk[i]["ai_relevance"] = vals.get("relevance", 50)
+                        chunk[i]["ai_summary"] = vals.get("summary", "")
+            return chunk
         except Exception as e:
-            print(f"   ⚠️  Gemini error: {e}")
+            print(f"   ⚠️  AIEngine batch error: {e}")
 
         # Fallback: mark semua sebagai cocok
         return [{"id": i, "language": target_language, "relevant": True,
-                 "summary": ""} for i in range(len(batch))]
+                 "summary": ""} for i in range(len(chunk))]

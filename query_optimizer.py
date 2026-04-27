@@ -9,6 +9,10 @@ Keyword expansion menggunakan DuckDuckGo APIs:
 
 import re
 import requests
+import json
+import itertools
+from ai_engine import AIEngine
+from osint_analyzer import OSINTAnalyzer
 from urllib.parse import quote_plus
 
 
@@ -118,13 +122,15 @@ class SmartExpander:
             return "news"
         if any(w in kw for w in ["saham", "stock", "investasi", "harga", "price", "ihsg", "emiten", "prediksi"]):
             return "stock"
+        if any(w in kw for w in ["email", "nomor hp", "kebocoran", "leak", "profil", "dork", "osint", "lacak", "identitas", "breach"]):
+            return "osint"
         return "general"
 
     # ------------------------------------------------------------------
     # Master expand
     # ------------------------------------------------------------------
 
-    def expand(self, keyword: str, language: str = "id") -> list[str]:
+    def expand(self, keyword: str, language: str = "id", force_intent: str = None) -> list[str]:
         """Orchestrate semua teknik expansion."""
         queries = []
         print(f"  🧠 Analyzing: '{keyword}'")
@@ -137,7 +143,43 @@ class SmartExpander:
         if entity["abstract"]:
             print(f"     📝 {entity['abstract'][:80]}…")
 
-        # 2. Per-word lookup (untuk akronim & entitas individual)
+        # 2. Intent detection
+        intent = force_intent if force_intent else self.detect_intent(keyword)
+        print(f"     🎯 Intent: {intent}")
+
+        # --- SPECIAL HANDLING FOR OSINT ---
+        if intent == "osint":
+            # 1. Exact phrase (for strict matching)
+            if " " in keyword and not keyword.startswith('"'):
+                exact = f'"{keyword}"'
+                queries.append(exact)
+            else:
+                queries.append(keyword)
+
+            # 2. Add loose name search to catch typos (e.g. 'y' vs 'i')
+            unquoted = keyword.replace('"', '')
+            if " " in unquoted:
+                queries.append(unquoted)
+
+            # 3. AI Dorking via OSINTAnalyzer
+            try:
+                analyzer = OSINTAnalyzer()
+                dork = analyzer.generate_dork(unquoted)
+                if dork and dork not in queries:
+                    queries.append(dork)
+            except Exception as e:
+                print(f"     ⚠️ AI Dorking error: {e}")
+                
+            # 4. Add targeted site searches (unquoted to allow DDG fuzzy matching on names)
+            queries.append(f'{unquoted} site:linkedin.com')
+            queries.append(f'{unquoted} site:instagram.com')
+            queries.append(f'{unquoted} site:facebook.com')
+            
+            # Skip the rest of general expansions for OSINT to keep results clean
+            return list(dict.fromkeys(queries))
+
+        # --- NORMAL EXPANION ---
+        # 3. Per-word lookup (untuk akronim & entitas individual)
         words = keyword.split()
         if len(words) >= 2:
             for word in words:
@@ -157,10 +199,7 @@ class SmartExpander:
             print(f"     💡 Suggestions: {suggestions[:3]}")
             queries.extend(suggestions[:3])
 
-        # 4. Intent-based variants
-        intent = self.detect_intent(keyword)
-        print(f"     🎯 Intent: {intent}")
-
+        # 6. Intent-based variants
         site_map = {
             "job": "linkedin.com",
             "news": "detik.com",
@@ -169,7 +208,7 @@ class SmartExpander:
         if intent in site_map:
             queries.append(f"{keyword} site:{site_map[intent]}")
 
-        # 5. Operator variants
+        # 7. Operator variants
         if " " in keyword:
             queries.append(f'"{keyword}"')  # exact match
 
@@ -178,8 +217,9 @@ class SmartExpander:
             queries.append(f"{keyword} fundamental")
         else:
             time_words = {"id": "terbaru", "en": "latest"}
-            tw = time_words.get(language, "terbaru")
-            queries.append(f"{keyword} {tw}")
+            tw = time_words.get(language, "")
+            if tw:
+                queries.append(f"{keyword} {tw}")
 
         # 6. Related topics sebagai query tambahan
         for related in entity.get("related", [])[:2]:
@@ -211,7 +251,7 @@ _expander = SmartExpander()
 
 def get_optimized_queries(keyword, language='en', intent='news', time_range='w'):
     """Get expanded & optimized queries for a keyword."""
-    return _expander.expand(keyword, language)
+    return _expander.expand(keyword, language, force_intent=intent)
 
 
 def analyze_search_effectiveness(keywords_list, language='en'):

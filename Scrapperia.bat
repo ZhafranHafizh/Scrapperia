@@ -1,5 +1,5 @@
 @echo off
 title Scrapperia - AI Search Engine
 cd /d "%~dp0"
-python randSearch.py
+python app.py
 pause
