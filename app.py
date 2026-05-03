@@ -333,11 +333,21 @@ def main(page: ft.Page):
         )
 
     ai_content = ft.Text("", size=12, color=TEXT, selectable=True)
+    ai_scroll = ft.ListView(
+        controls=[ai_content],
+        spacing=0,
+        auto_scroll=False,
+        expand=True,
+    )
     ai_panel = ft.Container(
         content=ft.Column(
             [
                 ft.Text("AI Insight", size=14, weight=ft.FontWeight.BOLD, color=ACCENT),
-                ai_content,
+                ft.Container(
+                    content=ai_scroll,
+                    height=240,
+                    border_radius=10,
+                ),
             ],
             spacing=6,
         ),
