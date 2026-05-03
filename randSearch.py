@@ -30,6 +30,8 @@ from query_optimizer import get_optimized_queries, analyze_search_effectiveness
 from quality_rater import rate_and_rank_results, remove_duplicate_results
 from trend_detector import TrendDetector
 from gemini_filter import GeminiFilter
+from osint_analyzer import OSINTAnalyzer
+from osint_scorer import OSINTScorer
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +164,8 @@ class SearchScraper:
         self.results: list[dict] = []
         self.filtered_count = 0
         self._ddgs = None
+        self.search_mode = "text"
+        self.osint_correlation: dict = {}
 
     def _get_ddgs(self) -> DDGS:
         """Reuse satu DDGS instance agar koneksi stabil."""
@@ -232,10 +236,17 @@ class SearchScraper:
         search_mode: str = "text",
         enrich_dates: bool = True,
     ):
+        self.search_mode = search_mode
         region = DDG_REGION_MAP.get(language, "wt-wt")
         timelimit = TIME_MAP.get(time_range)
 
-        print(f"\n🔍 Mode: {'📰 News' if search_mode == 'news' else '🌐 Text'}")
+        mode_label = {
+            "text": "🌐 Text",
+            "news": "📰 News",
+            "stock": "📈 Stock",
+            "osint": "🕵️ OSINT",
+        }.get(search_mode, "🌐 Text")
+        print(f"\n🔍 Mode: {mode_label}")
         print(f"🌏 Region: {region} | ⏰ Waktu: {timelimit or 'semua'}")
         print(f"📅 Enrich tanggal asli: {'YA' if enrich_dates else 'TIDAK'}")
 
@@ -306,6 +317,9 @@ class SearchScraper:
 
         # --- Gemini AI filter ---
         before_filter = len(self.results)
+        if search_mode == "osint" and use_language_filter:
+            print("\n🕵️ OSINT mode: skip language filter to preserve public evidence.")
+            use_language_filter = False
         if use_language_filter:
             print(f"\n🤖 Gemini AI Filter (bahasa={language})…")
             try:
@@ -329,10 +343,21 @@ class SearchScraper:
         self.results, dup = remove_duplicate_results(self.results, threshold)
         print(f"🗑️  Duplikat: {dup} dihapus | Tersisa: {len(self.results)}")
 
-    def score_and_rank(self, keyword_hint: str = "", language: str = "en"):
+    def score_and_rank(self, keyword_hint: str = "", language: str = "en", mode: str | None = None):
         if not self.results:
             return
         kw = keyword_hint or (self.results[0].get("keyword", "") if self.results else "")
+        active_mode = mode or self.search_mode
+
+        if active_mode == "osint":
+            analyzer = OSINTAnalyzer()
+            scorer = OSINTScorer()
+            self.results = [analyzer.enrich_result_entities(r) for r in self.results]
+            self.results = scorer.rank_results(self.results, kw)
+            self.osint_correlation = analyzer.correlate_identity(self.results, kw)
+            print(f"🕵️ {len(self.results)} hasil OSINT diurutkan.")
+            return
+
         self.results = rate_and_rank_results(self.results, kw, language)
         print(f"⭐ {len(self.results)} hasil diurutkan.")
 
@@ -350,11 +375,16 @@ class SearchScraper:
     def export_csv(self, filepath: str = "search_results.csv"):
         with open(filepath, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
-            w.writerow(["No", "Quality_Score", "Quality_Grade", "Keyword",
-                        "Title", "Description", "Link", "Date", "Source", "Language"])
+            w.writerow([
+                "No", "Quality_Score", "Quality_Grade", "Keyword",
+                "Title", "Description", "Link", "Date", "Source", "Language",
+                "OSINT_Score", "OSINT_Confidence", "OSINT_Platform",
+                "OSINT_Emails", "OSINT_Phones", "OSINT_Usernames", "OSINT_Links",
+            ])
             for i, r in enumerate(self.results, 1):
                 d = r.get("date")
                 fmt = d.strftime("%Y-%m-%d") if isinstance(d, datetime) else "N/A"
+                entities = r.get("osint_entities", {}) or {}
                 w.writerow([
                     i,
                     f"{r.get('quality_score', 0):.2f}",
@@ -366,6 +396,13 @@ class SearchScraper:
                     fmt,
                     r.get("source", ""),
                     r.get("language", ""),
+                    r.get("osint_score", ""),
+                    r.get("osint_confidence", ""),
+                    r.get("osint_platform", ""),
+                    "; ".join(entities.get("emails", [])),
+                    "; ".join(entities.get("phones", [])),
+                    "; ".join(entities.get("usernames", [])),
+                    "; ".join(entities.get("links", [])),
                 ])
         print(f"✅ CSV: '{filepath}' ({len(self.results)} baris)")
 
@@ -398,12 +435,33 @@ class SearchScraper:
             src = r.get("source", "")
             src_str = f" │ 📰 {src}" if src else ""
 
-            print(f"\n{Fore.WHITE}{Style.BRIGHT}{i}. [{grade} │ {score:.0f}] {r.get('title', '')[:80]}{Style.RESET_ALL}")
+            if "osint_score" in r:
+                osint_score = r.get("osint_score", 0)
+                osint_conf = r.get("osint_confidence", "Unverified")
+                print(f"\n{Fore.WHITE}{Style.BRIGHT}{i}. [{osint_conf} | {osint_score:.0f}] {r.get('title', '')[:80]}{Style.RESET_ALL}")
+            else:
+                print(f"\n{Fore.WHITE}{Style.BRIGHT}{i}. [{grade} │ {score:.0f}] {r.get('title', '')[:80]}{Style.RESET_ALL}")
             print(f"   {Fore.BLUE}📅 {fmt}{src_str}{Style.RESET_ALL}")
             print(f"   {Fore.CYAN}🔗 {(r.get('link') or 'No Link')[:90]}{Style.RESET_ALL}")
             desc = r.get("ai_summary") or r.get("description", "")[:120]
             if desc:
                 print(f"   {Fore.WHITE}📝 {desc}…{Style.RESET_ALL}")
+            if "osint_score" in r:
+                entities = r.get("osint_entities", {}) or {}
+                platform = r.get("osint_platform", "unknown")
+                summary = r.get("osint_evidence_summary", "limited public evidence")
+                usernames = ", ".join(entities.get("usernames", [])[:2]) or "-"
+                print(f"   {Fore.YELLOW}🕵️ Platform: {platform}{Style.RESET_ALL}")
+                print(f"   {Fore.YELLOW}Evidence: {summary}{Style.RESET_ALL}")
+                print(f"   {Fore.YELLOW}Public entities: username={usernames}{Style.RESET_ALL}")
+
+        if self.osint_correlation:
+            corr = self.osint_correlation
+            print(f"\n{Fore.MAGENTA}OSINT Correlation Confidence: {corr.get('confidence', 0)}{Style.RESET_ALL}")
+            if corr.get("matched_platforms"):
+                print(f"   Platforms: {', '.join(corr['matched_platforms'])}")
+            if corr.get("notes"):
+                print(f"   Notes: {corr['notes'][0]}")
 
 
 # ---------------------------------------------------------------------------
@@ -478,20 +536,21 @@ def run_scrape(
 
         # Dedup & score
         scraper.deduplicate()
-        scraper.score_and_rank(language=language)
+        scraper.score_and_rank(language=language, mode=search_mode)
         log(f"⭐ {len(scraper.results)} hasil setelah dedup + scoring")
         progress(0.7)
 
         # Gemini filter
-        log("🤖 Gemini AI filter…")
-        try:
-            from gemini_filter import GeminiFilter
-            gf = GeminiFilter()
-            keyword_hint = keywords[0] if keywords else ""
-            scraper.results = gf.filter_results(scraper.results, language, keyword_hint)
-            log(f"✅ {len(scraper.results)} lolos filter")
-        except Exception as e:
-            log(f"⚠️ Gemini filter error: {e}")
+        if search_mode != "osint":
+            log("🤖 Gemini AI filter…")
+            try:
+                from gemini_filter import GeminiFilter
+                gf = GeminiFilter()
+                keyword_hint = keywords[0] if keywords else ""
+                scraper.results = gf.filter_results(scraper.results, language, keyword_hint)
+                log(f"✅ {len(scraper.results)} lolos filter")
+            except Exception as e:
+                log(f"⚠️ Gemini filter error: {e}")
         progress(0.85)
 
         # Trend / Stock analysis
@@ -505,7 +564,7 @@ def run_scrape(
                 )
             except Exception as e:
                 ai_summary = f"⚠️ Error: {e}"
-        else:
+        elif search_mode != "osint":
             scraper.detect_trends()
 
         progress(0.95)
@@ -522,6 +581,7 @@ def run_scrape(
                 "results": scraper.results,
                 "ai_summary": ai_summary,
                 "mode": search_mode,
+                "osint_correlation": scraper.osint_correlation,
             })
 
     except Exception as e:
@@ -594,7 +654,7 @@ def main():
             keywords = [k.strip() for k in kw_override.split(",") if k.strip()]
 
         mode_override = input(f"  Mode [{mode}]: ").strip().lower()
-        if mode_override in ("text", "news", "stock"):
+        if mode_override in ("text", "news", "stock", "osint"):
             mode = mode_override
 
         lang_override = input(f"  Bahasa [{language}]: ").strip().lower()
@@ -630,13 +690,13 @@ def main():
         return
 
     scraper.deduplicate()
-    scraper.score_and_rank(language=language)
+    scraper.score_and_rank(language=language, mode=mode)
 
     # --- Trend Analysis / Stock Analysis ---
     if mode == "stock":
         print(f"\n{Fore.CYAN}  📈 Analisis saham sedang disiapkan...{Style.RESET_ALL}")
         # Skip normal trend detection for stock mode to save time
-    else:
+    elif mode != "osint":
         scraper.detect_trends()
 
     # --- Export ---

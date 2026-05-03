@@ -9,11 +9,14 @@ Keyword expansion menggunakan DuckDuckGo APIs:
 
 import re
 import requests
-import json
-import itertools
-from ai_engine import AIEngine
-from osint_analyzer import OSINTAnalyzer
-from urllib.parse import quote_plus
+
+
+OSINT_SITE_GROUPS = {
+    "professional": ["linkedin.com", "github.com", "medium.com", "dev.to"],
+    "social": ["instagram.com", "facebook.com", "x.com", "twitter.com", "tiktok.com"],
+    "documents": ["filetype:pdf", "filetype:doc", "filetype:docx"],
+    "contact": ["email", "contact", "kontak", "profile", "profil"],
+}
 
 
 # ---------------------------------------------------------------------------
@@ -33,6 +36,59 @@ class SmartExpander:
                           "AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36"
         })
         self._cache: dict[str, dict] = {}
+
+    @staticmethod
+    def _is_indonesian_target(keyword: str) -> bool:
+        kw = keyword.lower()
+        id_hints = ["nama", "orang", "kontak", "profil", "organisasi", "indonesia", "jakarta", "bandung"]
+        return any(h in kw for h in id_hints)
+
+    def _build_osint_queries(self, keyword: str) -> list[str]:
+        clean = keyword.replace('"', "").strip()
+        exact = f'"{clean}"' if " " in clean else clean
+        queries = [exact, clean]
+
+        # Focused platform queries
+        for site in OSINT_SITE_GROUPS["professional"][:2]:
+            queries.append(f'{exact} site:{site}')
+        for site in OSINT_SITE_GROUPS["social"][:2]:
+            queries.append(f'{exact} site:{site}')
+
+        # Document + contact angle
+        queries.append(f'{exact} {OSINT_SITE_GROUPS["documents"][0]}')
+        queries.append(f'{exact} email OR contact')
+
+        if self._is_indonesian_target(clean):
+            queries.append(f'{exact} kontak')
+            queries.append(f'{exact} profil')
+            queries.append(f'{exact} organisasi')
+
+        # Deduplicate while preserving order and keep within 8-12 variants
+        seen = set()
+        unique = []
+        for q in queries:
+            qn = q.lower().strip()
+            if qn and qn not in seen:
+                seen.add(qn)
+                unique.append(q)
+
+        if len(unique) < 8:
+            # Backfill using additional site/document variations
+            fillers = [
+                f'{exact} site:{OSINT_SITE_GROUPS["professional"][2]}',
+                f'{exact} site:{OSINT_SITE_GROUPS["social"][2]}',
+                f'{exact} {OSINT_SITE_GROUPS["documents"][1]}',
+                f'{exact} {OSINT_SITE_GROUPS["contact"][2]}',
+            ]
+            for f in fillers:
+                fn = f.lower().strip()
+                if fn not in seen:
+                    seen.add(fn)
+                    unique.append(f)
+                if len(unique) >= 8:
+                    break
+
+        return unique[:12]
 
     # ------------------------------------------------------------------
     # DDG Instant Answer API
@@ -149,34 +205,9 @@ class SmartExpander:
 
         # --- SPECIAL HANDLING FOR OSINT ---
         if intent == "osint":
-            # 1. Exact phrase (for strict matching)
-            if " " in keyword and not keyword.startswith('"'):
-                exact = f'"{keyword}"'
-                queries.append(exact)
-            else:
-                queries.append(keyword)
-
-            # 2. Add loose name search to catch typos (e.g. 'y' vs 'i')
-            unquoted = keyword.replace('"', '')
-            if " " in unquoted:
-                queries.append(unquoted)
-
-            # 3. AI Dorking via OSINTAnalyzer
-            try:
-                analyzer = OSINTAnalyzer()
-                dork = analyzer.generate_dork(unquoted)
-                if dork and dork not in queries:
-                    queries.append(dork)
-            except Exception as e:
-                print(f"     ⚠️ AI Dorking error: {e}")
-                
-            # 4. Add targeted site searches (unquoted to allow DDG fuzzy matching on names)
-            queries.append(f'{unquoted} site:linkedin.com')
-            queries.append(f'{unquoted} site:instagram.com')
-            queries.append(f'{unquoted} site:facebook.com')
-            
-            # Skip the rest of general expansions for OSINT to keep results clean
-            return list(dict.fromkeys(queries))
+            osint_queries = self._build_osint_queries(keyword)
+            print(f"     🕵️ OSINT query groups active ({len(osint_queries)} variants)")
+            return osint_queries
 
         # --- NORMAL EXPANION ---
         # 3. Per-word lookup (untuk akronim & entitas individual)
