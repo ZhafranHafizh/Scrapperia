@@ -125,6 +125,20 @@ def main(page: ft.Page):
         content_padding=ft.padding.symmetric(horizontal=16, vertical=16),
     )
 
+    location_field = ft.TextField(
+        hint_text="Lokasi (kota/negara) - Opsional",
+        border_color=BORDER,
+        focused_border_color=ACCENT,
+        color=TEXT,
+        hint_style=ft.TextStyle(color=TEXT_SOFT, size=13),
+        bgcolor=CARD,
+        border_radius=14,
+        prefix_icon=ft.Icons.LOCATION_ON,
+        text_size=14,
+        content_padding=ft.padding.symmetric(horizontal=16, vertical=12),
+        visible=False,
+    )
+
     lang_dd = ft.Dropdown(
         label="Bahasa",
         value="id",
@@ -196,6 +210,7 @@ def main(page: ft.Page):
         time_dd.visible = not is_osint
         count_box.visible = not is_osint
         enrich_box.visible = not is_osint
+        location_field.visible = is_osint
         safe_update("mode")
 
     mode_selector = ft.SegmentedButton(
@@ -590,6 +605,7 @@ def main(page: ft.Page):
                 num_results=int(num_slider.value),
                 search_mode=mode,
                 enrich_dates=enrich_switch.value,
+                location=loc,
                 on_log=_on_log,
                 on_progress=_on_progress,
                 on_complete=_on_complete,
@@ -739,6 +755,7 @@ def main(page: ft.Page):
                     padding=14,
                 ),
                 search_field,
+                location_field,
                 ft.Column(
                     [
                         ft.Text("Mode pencarian", size=11, color=TEXT_MUTED),
