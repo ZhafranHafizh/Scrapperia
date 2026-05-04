@@ -1,9 +1,9 @@
 """
-Query Optimizer v3.0 — API-Driven Smart Expansion
+Query Optimizer v3.1 — API-Driven Smart Expansion
 
-Keyword expansion menggunakan DuckDuckGo APIs:
-  - Instant Answer API → definisi, akronim, entitas
-  - Suggestions API → autocomplete
+Keyword expansion menggunakan Google + DuckDuckGo APIs:
+  - DuckDuckGo Instant Answer API → definisi, akronim, entitas
+  - Google Autocomplete API → suggestions
   - Tanpa hardcode database, semua dinamis
 """
 
@@ -24,10 +24,10 @@ OSINT_SITE_GROUPS = {
 # ---------------------------------------------------------------------------
 
 class SmartExpander:
-    """Expand keyword secara cerdas via DuckDuckGo APIs."""
+    """Expand keyword secara cerdas via Google + DDG APIs."""
 
     INSTANT_URL = "https://api.duckduckgo.com/"
-    SUGGEST_URL = "https://duckduckgo.com/ac/"
+    SUGGEST_URL = "https://suggestqueries.google.com/complete/search"
 
     def __init__(self):
         self.session = requests.Session()
@@ -43,50 +43,58 @@ class SmartExpander:
         id_hints = ["nama", "orang", "kontak", "profil", "organisasi", "indonesia", "jakarta", "bandung"]
         return any(h in kw for h in id_hints)
 
-    def _build_osint_queries(self, keyword: str) -> list[str]:
+    def _build_osint_queries(self, keyword: str, location: str = "") -> list[str]:
+        """Build controlled OSINT query set prioritising the exact full name and location."""
         clean = keyword.replace('"', "").strip()
         exact = f'"{clean}"' if " " in clean else clean
-        queries = [exact, clean]
+        
+        loc_str = f' "{location.strip()}"' if location.strip() else ""
+        loc_unquoted = f' {location.strip()}' if location.strip() else ""
 
-        # Focused platform queries
-        for site in OSINT_SITE_GROUPS["professional"][:2]:
-            queries.append(f'{exact} site:{site}')
-        for site in OSINT_SITE_GROUPS["social"][:2]:
-            queries.append(f'{exact} site:{site}')
+        queries: list[str] = []
 
-        # Document + contact angle
-        queries.append(f'{exact} {OSINT_SITE_GROUPS["documents"][0]}')
-        queries.append(f'{exact} email OR contact')
+        # 1. Exact phrase + location — must always come first
+        queries.append(f"{exact}{loc_str}")
+        if exact != clean:
+            queries.append(f"{clean}{loc_unquoted}")
 
-        if self._is_indonesian_target(clean):
-            queries.append(f'{exact} kontak')
-            queries.append(f'{exact} profil')
-            queries.append(f'{exact} organisasi')
+        # 2. Major social / professional site searches
+        priority_sites = [
+            "instagram.com", "linkedin.com", "github.com", "facebook.com",
+        ]
+        for site in priority_sites:
+            queries.append(f'{exact}{loc_unquoted} site:{site}')
 
-        # Deduplicate while preserving order and keep within 8-12 variants
-        seen = set()
-        unique = []
+        # 3. Contact / profile angle
+        queries.append(f'{exact}{loc_unquoted} profil')
+        queries.append(f'{exact}{loc_unquoted} kontak')
+
+        # 4. Backfill with more platforms and document queries
+        backfill = [
+            f'{exact}{loc_unquoted} site:twitter.com OR site:x.com',
+            f'{exact}{loc_unquoted} site:tiktok.com',
+            f'{exact}{loc_unquoted} site:medium.com',
+            f'{exact}{loc_unquoted} {OSINT_SITE_GROUPS["documents"][0]}',
+            f'{exact}{loc_unquoted} email OR contact',
+        ]
+
+        # Deduplicate while preserving order
+        seen: set[str] = set()
+        unique: list[str] = []
         for q in queries:
             qn = q.lower().strip()
             if qn and qn not in seen:
                 seen.add(qn)
                 unique.append(q)
 
-        if len(unique) < 8:
-            # Backfill using additional site/document variations
-            fillers = [
-                f'{exact} site:{OSINT_SITE_GROUPS["professional"][2]}',
-                f'{exact} site:{OSINT_SITE_GROUPS["social"][2]}',
-                f'{exact} {OSINT_SITE_GROUPS["documents"][1]}',
-                f'{exact} {OSINT_SITE_GROUPS["contact"][2]}',
-            ]
-            for f in fillers:
-                fn = f.lower().strip()
-                if fn not in seen:
-                    seen.add(fn)
-                    unique.append(f)
-                if len(unique) >= 8:
-                    break
+        # Top up from backfill to reach at least 8
+        for bf in backfill:
+            bn = bf.lower().strip()
+            if bn not in seen:
+                seen.add(bn)
+                unique.append(bf)
+            if len(unique) >= 12:
+                break
 
         return unique[:12]
 
@@ -150,14 +158,17 @@ class SmartExpander:
     # ------------------------------------------------------------------
 
     def get_suggestions(self, keyword: str, language: str = "id") -> list[str]:
-        """Fetch autocomplete suggestions."""
+        """Fetch autocomplete suggestions from Google."""
         try:
             resp = self.session.get(self.SUGGEST_URL,
-                                    params={"q": keyword, "kl": f"{language}-{language}"},
+                                    params={"client": "chrome", "q": keyword, "hl": language},
                                     timeout=5)
             if resp.status_code == 200:
-                return [item["phrase"] for item in resp.json()
-                        if item.get("phrase", "").lower() != keyword.lower()][:5]
+                data = resp.json()
+                # Google returns [query, [suggestions], ...]  
+                if isinstance(data, list) and len(data) > 1:
+                    return [s for s in data[1]
+                            if s.lower() != keyword.lower()][:5]
         except Exception:
             pass
         return []
@@ -186,7 +197,7 @@ class SmartExpander:
     # Master expand
     # ------------------------------------------------------------------
 
-    def expand(self, keyword: str, language: str = "id", force_intent: str = None) -> list[str]:
+    def expand(self, keyword: str, language: str = "id", force_intent: str = None, location: str = "") -> list[str]:
         """Orchestrate semua teknik expansion."""
         queries = []
         print(f"  🧠 Analyzing: '{keyword}'")
@@ -205,7 +216,7 @@ class SmartExpander:
 
         # --- SPECIAL HANDLING FOR OSINT ---
         if intent == "osint":
-            osint_queries = self._build_osint_queries(keyword)
+            osint_queries = self._build_osint_queries(keyword, location)
             print(f"     🕵️ OSINT query groups active ({len(osint_queries)} variants)")
             return osint_queries
 
@@ -280,9 +291,9 @@ class SmartExpander:
 _expander = SmartExpander()
 
 
-def get_optimized_queries(keyword, language='en', intent='news', time_range='w'):
+def get_optimized_queries(keyword, language='en', intent='news', time_range='w', location=''):
     """Get expanded & optimized queries for a keyword."""
-    return _expander.expand(keyword, language, force_intent=intent)
+    return _expander.expand(keyword, language, force_intent=intent, location=location)
 
 
 def analyze_search_effectiveness(keywords_list, language='en'):

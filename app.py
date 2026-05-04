@@ -11,7 +11,7 @@ import flet as ft
 
 from gemini_filter import GeminiFilter
 from osint_analyzer import OSINTAnalyzer
-from randSearch import run_scrape
+from randSearch import run_scrape, normalize_keyword_list
 
 _session_results = {}
 
@@ -359,11 +359,17 @@ def main(page: ft.Page):
     )
 
     osint_content = ft.Column(spacing=6)
+    osint_scroll = ft.ListView(
+        controls=[osint_content],
+        spacing=0,
+        auto_scroll=False,
+        height=280,
+    )
     osint_panel = ft.Container(
         content=ft.Column(
             [
                 ft.Text("OSINT Entities", size=14, weight=ft.FontWeight.BOLD, color=WARNING),
-                osint_content,
+                osint_scroll,
             ],
             spacing=6,
         ),
@@ -427,6 +433,9 @@ def main(page: ft.Page):
         if time_dd.value != "w":
             tr = time_dd.value
 
+        # For OSINT, ensure raw input is always the primary keyword
+        keywords = normalize_keyword_list(query, keywords, mode)
+
         add_log(f"Keywords: {keywords}")
         add_log(f"Bahasa={lang} | Mode={mode} | Waktu={tr}")
 
@@ -461,38 +470,86 @@ def main(page: ft.Page):
                         show_results_empty()
 
                     if mode == "osint":
-                        oa = OSINTAnalyzer()
-                        combined_text = " ".join(
-                            [r.get("title", "") + " " + r.get("description", "") for r in results]
-                        )
-                        entities = oa.extract_entities_regex(combined_text)
+                        # Aggregate entities from per-result osint_entities
+                        all_platforms = set()
+                        all_usernames = set()
+                        all_profile_urls = set()
+                        all_emails = set()
+                        all_phones = set()
+                        all_links = set()
+
+                        for r in results:
+                            ent = r.get("osint_entities") or {}
+                            for p in ent.get("platforms", []):
+                                all_platforms.add(p)
+                            plat = r.get("osint_platform", "")
+                            if plat and plat != "unknown":
+                                all_platforms.add(plat)
+                            for u in ent.get("usernames", []):
+                                all_usernames.add(u)
+                            for pu in ent.get("profile_urls", []):
+                                all_profile_urls.add(pu)
+                            for em in ent.get("emails", []):
+                                all_emails.add(em)
+                            for ph in ent.get("phones", []):
+                                all_phones.add(ph)
+                            for lk in ent.get("links", []):
+                                all_links.add(lk)
+
                         osint_content.controls.clear()
 
-                        if entities.get("emails"):
+                        if all_platforms:
+                            osint_content.controls.append(
+                                ft.Text("Platforms", size=11, color=TEXT_MUTED, weight=ft.FontWeight.BOLD)
+                            )
+                            for value in sorted(all_platforms):
+                                osint_content.controls.append(
+                                    ft.Text(f"  • {value.title()}", size=11, color=TEXT, selectable=True)
+                                )
+
+                        if all_usernames:
+                            osint_content.controls.append(
+                                ft.Text("Usernames", size=11, color=TEXT_MUTED, weight=ft.FontWeight.BOLD)
+                            )
+                            for value in sorted(all_usernames):
+                                osint_content.controls.append(
+                                    ft.Text(f"  • {value}", size=11, color=TEXT, selectable=True)
+                                )
+
+                        if all_profile_urls:
+                            osint_content.controls.append(
+                                ft.Text("Profile URLs", size=11, color=TEXT_MUTED, weight=ft.FontWeight.BOLD)
+                            )
+                            for value in sorted(all_profile_urls)[:8]:
+                                osint_content.controls.append(
+                                    ft.Text(f"  • {value}", size=11, color=ACCENT, selectable=True)
+                                )
+
+                        if all_emails:
                             osint_content.controls.append(
                                 ft.Text("Emails", size=11, color=TEXT_MUTED, weight=ft.FontWeight.BOLD)
                             )
-                            for value in entities["emails"]:
+                            for value in sorted(all_emails):
                                 osint_content.controls.append(
-                                    ft.Text(f"- {value}", size=11, color=TEXT, selectable=True)
+                                    ft.Text(f"  • {value}", size=11, color=TEXT, selectable=True)
                                 )
 
-                        if entities.get("phones"):
+                        if all_phones:
                             osint_content.controls.append(
                                 ft.Text("Phones", size=11, color=TEXT_MUTED, weight=ft.FontWeight.BOLD)
                             )
-                            for value in entities["phones"]:
+                            for value in sorted(all_phones):
                                 osint_content.controls.append(
-                                    ft.Text(f"- {value}", size=11, color=TEXT, selectable=True)
+                                    ft.Text(f"  • {value}", size=11, color=TEXT, selectable=True)
                                 )
 
-                        if entities.get("links"):
+                        if all_links:
                             osint_content.controls.append(
-                                ft.Text("Key footprints", size=11, color=TEXT_MUTED, weight=ft.FontWeight.BOLD)
+                                ft.Text("Key Footprints", size=11, color=TEXT_MUTED, weight=ft.FontWeight.BOLD)
                             )
-                            for value in entities["links"][:5]:
+                            for value in sorted(all_links)[:10]:
                                 osint_content.controls.append(
-                                    ft.Text(f"- {value}", size=11, color=ACCENT, selectable=True)
+                                    ft.Text(f"  • {value}", size=11, color=ACCENT, selectable=True)
                                 )
 
                         if not osint_content.controls:

@@ -110,6 +110,7 @@ class OSINTAnalyzer:
             "phones": phones,
             "links": links,
             "usernames": sorted(usernames),
+            "platforms": sorted({self.detect_platform(u) for u in profile_urls} | set(usernames_by_platform.keys())),
             "usernames_by_platform": {
                 k: sorted(set(v)) for k, v in usernames_by_platform.items() if v
             },

@@ -78,11 +78,29 @@ class OSINTScorer:
         target_norm = self._normalize(target)
         target_tokens = self._tokens(target_norm)
 
+        # --- Full exact name match ---
         if target_norm and target_norm in title:
             score += 20
         if target_norm and target_norm in desc:
             score += 10
 
+        # --- Partial name match: first two tokens together ---
+        if target_tokens and len(target_tokens) >= 2 and not (target_norm in title):
+            first_two = " ".join(target_tokens[:2])
+            if first_two in title:
+                score += 8
+            elif first_two in desc:
+                score += 5
+
+        # --- At least 2 tokens appear anywhere in title or description ---
+        if target_tokens and len(target_tokens) >= 2:
+            title_hits = sum(1 for t in target_tokens if t in title)
+            desc_hits = sum(1 for t in target_tokens if t in desc)
+            combined_hits = max(title_hits, desc_hits)
+            if combined_hits >= 2 and score < 20:
+                score += 4
+
+        # --- Word proximity check (close-together tokens in title) ---
         if target_tokens and len(target_tokens) >= 2:
             title_words = title.split()
             positions = []
@@ -94,6 +112,7 @@ class OSINTScorer:
                 if distance <= 3:
                     score += 5
 
+        # --- Username / domain resembles target token ---
         domain = self._extract_domain(link)
         entities = result.get("osint_entities", {}) or {}
         usernames = entities.get("usernames", []) or []
@@ -102,6 +121,17 @@ class OSINTScorer:
             t in joined_usernames for t in target_tokens if len(t) >= 3
         ):
             score += 5
+
+        # --- Small bonus if username resembles any target token closely ---
+        for uname in usernames:
+            un = self._normalize(uname).replace("_", "").replace(".", "").replace("-", "")
+            for token in target_tokens:
+                if len(token) >= 3 and token in un:
+                    score += 3
+                    break
+            else:
+                continue
+            break
 
         return min(35, score)
 

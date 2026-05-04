@@ -1,8 +1,9 @@
 """
-SearchScraper v7.0 — AI-Powered Smart Search Engine
+SearchScraper v8.0 — AI-Powered Smart Search Engine
 
 Fitur:
-  - Smart keyword expansion via DDG APIs
+  - Google Search backend for better result quality
+  - Smart keyword expansion via Google APIs
   - Gemini AI language filter + relevance scoring
   - Trend detection (timeline, peak, subtopics)
   - Real date extraction dari meta tags
@@ -21,7 +22,7 @@ from datetime import datetime
 from dateutil.parser import parse as date_parse
 
 from tqdm import tqdm
-from ddgs import DDGS
+from google_scraper import google_search, GoogleScraper
 from colorama import init, Fore, Style
 init(autoreset=True)
 
@@ -38,15 +39,9 @@ from osint_scorer import OSINTScorer
 # Constants
 # ---------------------------------------------------------------------------
 
-DDG_REGION_MAP = {
-    "id": "id-id", "en": "us-en", "es": "es-es", "fr": "fr-fr",
-    "de": "de-de", "pt": "br-pt", "it": "it-it", "ja": "jp-jp",
-    "ko": "kr-kr", "zh": "cn-zh", "ru": "ru-ru", "ar": "sa-ar",
-    "th": "th-th", "vi": "vn-vi", "nl": "nl-nl", "tr": "tr-tr",
-    "ms": "my-ms",
+GOOGLE_TBS_MAP = {
+    "d": "qdr:d", "w": "qdr:w", "m": "qdr:m", "y": "qdr:y",
 }
-
-TIME_MAP = {"d": "d", "w": "w", "m": "m", "y": "y"}
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
@@ -59,6 +54,31 @@ USER_AGENTS = [
 # Helpers
 # ---------------------------------------------------------------------------
 
+
+def normalize_keyword_list(raw_input: str, parsed_keywords: list[str], mode: str) -> list[str]:
+    """Ensure OSINT mode preserves the full raw query as primary keyword.
+
+    For OSINT, the original full name / input is always first so that
+    exact-match queries run before partial-match ones.  Other modes are
+    left unchanged.
+    """
+    keywords = [k.strip() for k in parsed_keywords if k and k.strip()]
+
+    if mode == "osint":
+        raw_clean = raw_input.strip().strip('"')
+        if raw_clean and len(raw_clean.split()) >= 2:
+            keywords = [raw_clean] + keywords
+
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    unique: list[str] = []
+    for kw in keywords:
+        key = kw.lower()
+        if key not in seen:
+            seen.add(key)
+            unique.append(kw)
+
+    return unique
 
 
 def extract_date_from_url(url: str) -> datetime | None:
@@ -154,68 +174,61 @@ def enrich_result(result: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 class SearchScraper:
-    """DuckDuckGo scraper with real date extraction."""
+    """Google Search scraper with AI-powered analysis."""
 
     MAX_PER_QUERY = 50
-    DELAY_RANGE = (2.5, 4.5)
+    DELAY_RANGE = (3.0, 6.0)
     MAX_RETRIES = 3
 
     def __init__(self):
         self.results: list[dict] = []
         self.filtered_count = 0
-        self._ddgs = None
+
         self.search_mode = "text"
         self.osint_correlation: dict = {}
 
-    def _get_ddgs(self) -> DDGS:
-        """Reuse satu DDGS instance agar koneksi stabil."""
-        if self._ddgs is None:
-            self._ddgs = DDGS()
-        return self._ddgs
 
-    # ------------------------------------------------------------------
-    # DDG Search
-    # ------------------------------------------------------------------
 
-    def _ddg_search(self, keyword: str, region: str, timelimit: str | None,
-                    max_results: int, mode: str = "text") -> list[dict]:
-        """DuckDuckGo search (text atau news)."""
+    def _init_scraper(self):
+        """Initialize or reuse Google scraper instance."""
+        if not hasattr(self, '_scraper') or self._scraper is None:
+            self._scraper = GoogleScraper()
+        return self._scraper
+
+    def _google_search(self, keyword: str, lang: str,
+                       max_results: int, mode: str = "text",
+                       time_range: str = "") -> list[dict]:
+        """Google search via Chrome headless."""
         for attempt in range(1, self.MAX_RETRIES + 1):
             try:
-                ddgs = self._get_ddgs()
-                if mode == "news":
-                    raw = ddgs.news(query=keyword, region=region,
-                                    timelimit=timelimit, max_results=max_results)
-                else:
-                    raw = ddgs.text(query=keyword, region=region,
-                                    timelimit=timelimit, max_results=max_results)
-
-                results = []
-                for r in raw:
-                    date = None
-                    if mode == "news":
-                        raw_date = r.get("date", "")
-                        if raw_date:
-                            try:
-                                date = date_parse(raw_date, fuzzy=True)
-                                date = date.replace(tzinfo=None)
-                            except (ValueError, TypeError):
-                                pass
-
-                    results.append({
-                        "title": r.get("title", ""),
-                        "description": r.get("body", ""),
-                        "link": r.get("url" if mode == "news" else "href", ""),
-                        "date": date,
-                        "source": r.get("source", "") if mode == "news" else "",
-                    })
-                return results
+                scraper = self._init_scraper()
+                results = scraper.search(
+                    query=keyword,
+                    lang=lang,
+                    num_results=max_results,
+                    time_range=time_range,
+                    mode=mode,
+                )
+                return [
+                    {
+                        "title": r.title,
+                        "description": r.description,
+                        "link": r.url,
+                        "date": r.date,
+                        "source": r.source,
+                    }
+                    for r in results
+                ]
             except Exception as e:
                 err_msg = str(e)
-                # Reset instance jika ada connection error
-                self._ddgs = None
+                # Reset scraper on failure
+                try:
+                    self._scraper.close()
+                except Exception:
+                    pass
+                self._scraper = None
                 if attempt < self.MAX_RETRIES:
-                    wait = 2 ** attempt + random.uniform(0, 1)
+                    wait = 3 * attempt + random.uniform(1, 3)
                     print(f"   ⚠️  Retry {attempt}/{self.MAX_RETRIES}: {err_msg[:60]}…")
                     time.sleep(wait)
                 else:
@@ -237,8 +250,6 @@ class SearchScraper:
         enrich_dates: bool = True,
     ):
         self.search_mode = search_mode
-        region = DDG_REGION_MAP.get(language, "wt-wt")
-        timelimit = TIME_MAP.get(time_range)
 
         mode_label = {
             "text": "🌐 Text",
@@ -247,7 +258,7 @@ class SearchScraper:
             "osint": "🕵️ OSINT",
         }.get(search_mode, "🌐 Text")
         print(f"\n🔍 Mode: {mode_label}")
-        print(f"🌏 Region: {region} | ⏰ Waktu: {timelimit or 'semua'}")
+        print(f"🌏 Language: {language} | ⏰ Waktu: {time_range or 'semua'}")
         print(f"📅 Enrich tanggal asli: {'YA' if enrich_dates else 'TIDAK'}")
 
         # --- Smart keyword expansion ---
@@ -263,7 +274,9 @@ class SearchScraper:
         seen = set()
         unique = [q for q in optimized if q.lower() not in seen and not seen.add(q.lower())]
         optimized = unique
-        random.shuffle(optimized)
+        # OSINT queries are ordered by precision — exact full-name first
+        if search_mode != "osint":
+            random.shuffle(optimized)
         print(f"\n  📊 Total query unik: {len(optimized)}")
 
         eff = analyze_search_effectiveness(optimized[:5], language)
@@ -281,13 +294,13 @@ class SearchScraper:
             time.sleep(random.uniform(*self.DELAY_RANGE))
             print(f"\n  🔎 '{keyword}' (max {rpq})")
 
-            # Text mode pertama
-            raw = self._ddg_search(keyword, region, timelimit, rpq, mode=search_mode)
+            # Google search
+            raw = self._google_search(keyword, language, rpq, mode=search_mode, time_range=time_range)
 
             # Jika news gagal, fallback ke text
             if not raw and search_mode == "news":
                 print("     ↳ News kosong, fallback ke text…")
-                raw = self._ddg_search(keyword, region, timelimit, rpq, mode="text")
+                raw = self._google_search(keyword, language, rpq, mode="text", time_range=time_range)
 
             print(f"     ↳ {len(raw)} hasil")
 
@@ -343,19 +356,22 @@ class SearchScraper:
         self.results, dup = remove_duplicate_results(self.results, threshold)
         print(f"🗑️  Duplikat: {dup} dihapus | Tersisa: {len(self.results)}")
 
-    def score_and_rank(self, keyword_hint: str = "", language: str = "en", mode: str | None = None):
+    def score_and_rank(self, keyword_hint: str = "", language: str = "en",
+                       mode: str | None = None, raw_query: str = ""):
         if not self.results:
             return
         kw = keyword_hint or (self.results[0].get("keyword", "") if self.results else "")
         active_mode = mode or self.search_mode
 
         if active_mode == "osint":
+            # Use the full raw query as OSINT target hint for best matching
+            osint_target = raw_query.strip() if raw_query.strip() else kw
             analyzer = OSINTAnalyzer()
             scorer = OSINTScorer()
             self.results = [analyzer.enrich_result_entities(r) for r in self.results]
-            self.results = scorer.rank_results(self.results, kw)
-            self.osint_correlation = analyzer.correlate_identity(self.results, kw)
-            print(f"🕵️ {len(self.results)} hasil OSINT diurutkan.")
+            self.results = scorer.rank_results(self.results, osint_target)
+            self.osint_correlation = analyzer.correlate_identity(self.results, osint_target)
+            print(f"🕵️ {len(self.results)} hasil OSINT diurutkan (target: '{osint_target}').")
             return
 
         self.results = rate_and_rank_results(self.results, kw, language)
@@ -510,6 +526,10 @@ def run_scrape(
         seen = set()
         unique = [q for q in optimized if q.lower() not in seen and not seen.add(q.lower())]
         optimized = unique
+        # OSINT queries are ordered by precision — keep order
+        if search_mode != "osint":
+            import random as _rng
+            _rng.shuffle(optimized)
         log(f"   📊 {len(optimized)} queries")
         progress(0.1)
 
@@ -536,7 +556,8 @@ def run_scrape(
 
         # Dedup & score
         scraper.deduplicate()
-        scraper.score_and_rank(language=language, mode=search_mode)
+        raw_query = keywords[0] if keywords else ""
+        scraper.score_and_rank(language=language, mode=search_mode, raw_query=raw_query)
         log(f"⭐ {len(scraper.results)} hasil setelah dedup + scoring")
         progress(0.7)
 
@@ -639,6 +660,9 @@ def main():
     mode = parsed.get("mode", "text")
     time_range = parsed.get("time_range", "w")
 
+    # For OSINT, ensure raw input is always the primary keyword
+    keywords = normalize_keyword_list(raw_input, keywords, mode)
+
     print(f"\n{Fore.CYAN}  ┌─ Parsed Settings ──────────────────────{Style.RESET_ALL}")
     print(f"{Fore.CYAN}  │{Style.RESET_ALL} 📋 Keywords : {Fore.WHITE}{keywords}{Style.RESET_ALL}")
     print(f"{Fore.CYAN}  │{Style.RESET_ALL} 🌐 Bahasa   : {Fore.WHITE}{language}{Style.RESET_ALL}")
@@ -690,7 +714,7 @@ def main():
         return
 
     scraper.deduplicate()
-    scraper.score_and_rank(language=language, mode=mode)
+    scraper.score_and_rank(language=language, mode=mode, raw_query=raw_input)
 
     # --- Trend Analysis / Stock Analysis ---
     if mode == "stock":
